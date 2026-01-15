@@ -96,6 +96,43 @@ class APIKeyManager:
                 }
             }
 
+    # ================== NEW FUNCTION ==================
+    def reserve_key_for_request(self) -> tuple[str | None, float]:
+        """
+        Atomically reserve a key for a request.
+
+        Returns:
+            (key, 0) if available, or (None, seconds_to_next_minute_window) if all keys are maxed.
+        """
+        with self.lock:
+            self._reset_daily_counters_if_needed()
+            now = time.time()
+
+            # Reset minute counters as needed
+            for key in self.keys:
+                self._reset_minute_counter_if_needed(key)
+
+            # Collect all keys under both daily and per-minute limits
+            available_keys = [
+                (key, self.key_stats[key]["requests_this_minute"])
+                for key in self.keys
+                if self.key_stats[key]["requests_today"] < TWELVEDATA_DAILY_LIMIT
+                and self.key_stats[key]["requests_this_minute"] < TWELVEDATA_MINUTE_LIMIT
+            ]
+
+            if available_keys:
+                # Return the key with least usage in current minute
+                available_keys.sort(key=lambda x: x[1])
+                return available_keys[0][0], 0.0
+
+            # All keys maxed, compute time to next available window
+            times_to_wait = [
+                60 - (now - self.key_stats[key]["minute_window_start"])
+                for key in self.keys
+            ]
+            wait_time = max(0.5, min(times_to_wait))
+            return None, wait_time
+
 
 # Global instance
 api_key_manager = APIKeyManager()
