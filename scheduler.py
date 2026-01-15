@@ -33,7 +33,7 @@ class CandleScheduler:
                     await asyncio.sleep(wait_time)
 
                 # Fetch initial history with the reserved key
-                candles = await fetch_initial_history(pair, timeframe, api_key=key)
+                candles = await fetch_initial_history(pair, timeframe)
 
                 if candles:
                     data_storage.set_initial_data(pair, timeframe, candles)
