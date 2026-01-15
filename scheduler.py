@@ -1,4 +1,4 @@
-"""Scheduler for polling TwelveData at candle close times."""
+"""Scheduler for polling TwelveData at candle close times with time slicing."""
 
 import asyncio
 from datetime import datetime, timezone
@@ -11,11 +11,34 @@ from data_storage import data_storage
 from api_key_manager import api_key_manager
 
 
+# Timeframe priority: lower index = higher priority
+TIMEFRAME_PRIORITY = ["1min", "5min", "15min", "1h", "4h"]
+
+
 class CandleScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler(timezone="UTC")
         self.is_initialized = False
         self.started = False
+
+        # Precompute stable per-pair offsets for time slicing
+        self.pair_offsets = self._compute_pair_offsets()
+
+    def _compute_pair_offsets(self):
+        """
+        Assign each pair a stable second offset within the minute.
+        This spreads requests evenly across the minute.
+        """
+        offsets = {}
+        pair_count = len(PAIRS)
+        if pair_count == 0:
+            return offsets
+
+        slot_size = max(1, 60 // pair_count)
+        for idx, pair in enumerate(PAIRS):
+            offsets[pair] = idx * slot_size
+
+        return offsets
 
     async def initialize_data(self):
         """Fetch initial historical data for all pairs and timeframes safely."""
@@ -26,29 +49,54 @@ class CandleScheduler:
                 while True:
                     key, wait_time = api_key_manager.reserve_key_for_request()
                     if key:
-                        # Fetch initial history
                         candles = await fetch_initial_history(pair, timeframe)
                         if candles:
                             data_storage.set_initial_data(pair, timeframe, candles)
                             print(f"Loaded {len(candles)} candles for {pair}/{timeframe}")
-                            # Record usage
                             api_key_manager.record_usage(key)
                             break
                         else:
                             print(f"Fetch failed for {pair}/{timeframe}, retrying in 10s...")
                             await asyncio.sleep(10)
                     else:
-                        # Wait until some key is available
                         print(f"No API keys available, waiting {wait_time:.2f}s...")
                         await asyncio.sleep(wait_time)
 
-                # Small delay to avoid hitting per-minute limits
                 await asyncio.sleep(0.2)
 
         self.is_initialized = True
         print("Historical data initialization complete")
 
-    async def fetch_closed_candles(self):
+    async def _fetch_pair_at_offset(self, pair, timeframes, delay):
+        """
+        Fetch closed candles for a single pair after a delay.
+        This function NEVER waits for API keys in live mode.
+        """
+        await asyncio.sleep(delay)
+
+        # Sort timeframes by priority
+        sorted_tfs = sorted(
+            timeframes,
+            key=lambda tf: TIMEFRAME_PRIORITY.index(tf)
+            if tf in TIMEFRAME_PRIORITY else len(TIMEFRAME_PRIORITY)
+        )
+
+        for timeframe in sorted_tfs:
+            key, _ = api_key_manager.reserve_key_for_request()
+            if not key:
+                print(f"[LIVE SKIP] No API key available for {pair}/{timeframe}")
+                continue
+
+            candles = await fetch_candles(pair, timeframe, outputsize=1)
+            if candles and len(candles) > 0:
+                data_storage.add_single_candle(pair, timeframe, candles[0])
+
+            api_key_manager.record_usage(key)
+
+    async def minute_tick(self):
+        """
+        Runs once per minute and schedules time-sliced fetches.
+        """
         if not self.is_initialized:
             return
 
@@ -58,26 +106,13 @@ class CandleScheduler:
         if not timeframes_to_fetch:
             return
 
-        print(f"[{now.isoformat()}] Fetching candles for timeframes: {timeframes_to_fetch}")
+        print(f"[{now.isoformat()}] Scheduling fetches for: {timeframes_to_fetch}")
 
         for pair in PAIRS:
-            for timeframe in timeframes_to_fetch:
-                while True:
-                    key, wait_time = api_key_manager.reserve_key_for_request()
-                    if key:
-                        # Fetch the most recent closed candle
-                        candles = await fetch_candles(pair, timeframe, outputsize=1)
-                        if candles and len(candles) > 0:
-                            data_storage.add_single_candle(pair, timeframe, candles[0])
-                        # Record usage
-                        api_key_manager.record_usage(key)
-                        break
-                    else:
-                        print(f"No API keys available, waiting {wait_time:.2f}s for {pair}/{timeframe}...")
-                        await asyncio.sleep(wait_time)
-
-                # Small delay to respect rate limits
-                await asyncio.sleep(0.2)
+            offset = self.pair_offsets.get(pair, 0)
+            asyncio.create_task(
+                self._fetch_pair_at_offset(pair, timeframes_to_fetch, offset)
+            )
 
     def start(self):
         if self.started:
@@ -85,16 +120,16 @@ class CandleScheduler:
             return
 
         self.started = True
-        # Run every minute to check for candle closures
+
         self.scheduler.add_job(
-            self.fetch_closed_candles,
-            CronTrigger(second=5),  # Run at 5 seconds past each minute
-            id="candle_fetcher",
+            self.minute_tick,
+            CronTrigger(second=5),
+            id="minute_tick",
             replace_existing=True
         )
 
         self.scheduler.start()
-        print("Scheduler started - polling every minute at :05 seconds")
+        print("Scheduler started with time-sliced polling")
 
     def stop(self):
         """Stop the scheduler."""
