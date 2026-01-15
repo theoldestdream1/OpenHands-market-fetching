@@ -49,17 +49,13 @@ def _is_confirmed_closed(candle_ts: datetime, now: datetime, timeframe: str) -> 
     return now >= candle_ts + timedelta(minutes=minutes)
 
 
-async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optional[List[Dict]]:
-    """
-    Fetch ONLY confirmed closed candles from TwelveData.
-    Handles key reservation and adaptive waiting internally.
-    """
-    # Reserve a key and wait if all keys are maxed
-    key, wait_time = api_key_manager.reserve_key_for_request()
-    while not key:
-        await asyncio.sleep(wait_time)
-        key, wait_time = api_key_manager.reserve_key_for_request()
-
+async def _fetch_with_key(
+    pair: str,
+    timeframe: str,
+    outputsize: int,
+    key: str
+) -> Optional[List[Dict]]:
+    """Shared fetch logic. Assumes a valid API key is already provided."""
     symbol = "XAU/USD" if pair == "XAUUSD" else f"{pair[:3]}/{pair[3:]}"
     params = {
         "symbol": symbol,
@@ -81,19 +77,18 @@ async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optio
             return None
 
         now = datetime.now(timezone.utc)
-        confirmed_candles = []
+        confirmed = []
 
         for candle in data["values"]:
             candle_ts = _parse_timestamp(candle["datetime"])
             if _is_confirmed_closed(candle_ts, now, timeframe):
-                confirmed_candles.append(candle)
+                confirmed.append(candle)
 
-        confirmed_candles = confirmed_candles[:outputsize]
+        confirmed = confirmed[:outputsize]
 
-        if confirmed_candles:
-            # Record usage only after successful fetch
+        if confirmed:
             api_key_manager.record_usage(key)
-            return confirmed_candles
+            return confirmed
 
         return None
 
@@ -102,9 +97,41 @@ async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optio
         return None
 
 
+# =========================
+# LIVE FETCH — NEVER WAITS
+# =========================
+async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optional[List[Dict]]:
+    """
+    LIVE candle fetch.
+    ❌ No waiting
+    ❌ No looping
+    ❌ No sleeping
+    """
+    key, _ = api_key_manager.reserve_key_for_request()
+    if not key:
+        # Hard skip — live logic must never block
+        print(f"[LIVE SKIP] No API key available for {pair}/{timeframe}")
+        return None
+
+    return await _fetch_with_key(pair, timeframe, outputsize, key)
+
+
+# =========================
+# INITIAL HISTORY — CAN WAIT
+# =========================
 async def fetch_initial_history(pair: str, timeframe: str) -> Optional[List[Dict]]:
+    """
+    Historical bootstrap.
+    ✅ Allowed to wait for a key.
+    """
     outputsize = ROLLING_LIMITS.get(timeframe, 100)
-    return await fetch_candles(pair, timeframe, outputsize)
+
+    key, wait_time = api_key_manager.reserve_key_for_request()
+    while not key:
+        await asyncio.sleep(wait_time)
+        key, wait_time = api_key_manager.reserve_key_for_request()
+
+    return await _fetch_with_key(pair, timeframe, outputsize, key)
 
 
 async def close_client():
