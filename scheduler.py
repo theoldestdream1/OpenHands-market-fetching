@@ -19,22 +19,30 @@ class CandleScheduler:
 
     async def initialize_data(self):
         """Fetch initial historical data for all pairs and timeframes safely."""
-        print("Initializing historical data (serialized to avoid API rate limits)...")
+        print("Initializing historical data (serialized with adaptive API key handling)...")
 
         for pair in PAIRS:
             for timeframe in TIMEFRAMES:
-                # Keep trying until fetch succeeds or we wait for a key
                 while True:
-                    candles = await fetch_initial_history(pair, timeframe)
-                    if candles:
-                        data_storage.set_initial_data(pair, timeframe, candles)
-                        print(f"Loaded {len(candles)} candles for {pair}/{timeframe}")
-                        break
+                    key, wait_time = api_key_manager.reserve_key_for_request()
+                    if key:
+                        # Fetch initial history
+                        candles = await fetch_initial_history(pair, timeframe)
+                        if candles:
+                            data_storage.set_initial_data(pair, timeframe, candles)
+                            print(f"Loaded {len(candles)} candles for {pair}/{timeframe}")
+                            # Record usage
+                            api_key_manager.record_usage(key)
+                            break
+                        else:
+                            print(f"Fetch failed for {pair}/{timeframe}, retrying in 10s...")
+                            await asyncio.sleep(10)
                     else:
-                        print(f"No API keys available or fetch failed for {pair}/{timeframe}, waiting 10s...")
-                        await asyncio.sleep(10)
+                        # Wait until some key is available
+                        print(f"No API keys available, waiting {wait_time:.2f}s...")
+                        await asyncio.sleep(wait_time)
 
-                # Small delay to prevent hitting per-minute limits
+                # Small delay to avoid hitting per-minute limits
                 await asyncio.sleep(0.2)
 
         self.is_initialized = True
@@ -43,7 +51,7 @@ class CandleScheduler:
     async def fetch_closed_candles(self):
         if not self.is_initialized:
             return
-        """Fetch newly closed candles for all pairs and applicable timeframes."""
+
         now = datetime.now(timezone.utc)
         timeframes_to_fetch = get_timeframes_to_fetch(now)
 
@@ -54,10 +62,19 @@ class CandleScheduler:
 
         for pair in PAIRS:
             for timeframe in timeframes_to_fetch:
-                # Fetch the most recent closed candle
-                candles = await fetch_candles(pair, timeframe, outputsize=1)
-                if candles and len(candles) > 0:
-                    data_storage.add_single_candle(pair, timeframe, candles[0])
+                while True:
+                    key, wait_time = api_key_manager.reserve_key_for_request()
+                    if key:
+                        # Fetch the most recent closed candle
+                        candles = await fetch_candles(pair, timeframe, outputsize=1)
+                        if candles and len(candles) > 0:
+                            data_storage.add_single_candle(pair, timeframe, candles[0])
+                        # Record usage
+                        api_key_manager.record_usage(key)
+                        break
+                    else:
+                        print(f"No API keys available, waiting {wait_time:.2f}s for {pair}/{timeframe}...")
+                        await asyncio.sleep(wait_time)
 
                 # Small delay to respect rate limits
                 await asyncio.sleep(0.2)
