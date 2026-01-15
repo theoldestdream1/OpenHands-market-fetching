@@ -18,25 +18,29 @@ class CandleScheduler:
         self.started = False
     
     async def initialize_data(self):
-        """Fetch initial historical data for all pairs and timeframes."""
-        print("Initializing historical data...")
-        
+        """Fetch initial historical data for all pairs and timeframes in a safe, serialized way."""
+        print("Initializing historical data (serialized to avoid API rate limits)...")
+    
         for pair in PAIRS:
             for timeframe in TIMEFRAMES:
-                # Check if we have an available key
-                if not api_key_manager.get_available_key():
-                    print("No available API keys, waiting 60 seconds...")
-                    await asyncio.sleep(60)
-                
+                # Check if there is an available API key
+                key = api_key_manager.get_available_key()
+                while not key:
+                    print("No available API keys, waiting 10 seconds...")
+                    await asyncio.sleep(10)
+                    key = api_key_manager.get_available_key()
+            
+                # Fetch initial history for this pair/timeframe
                 candles = await fetch_initial_history(pair, timeframe)
+             
                 if candles:
                     data_storage.set_initial_data(pair, timeframe, candles)
                     print(f"Loaded {len(candles)} candles for {pair}/{timeframe}")
                 else:
                     print(f"Failed to load initial data for {pair}/{timeframe}")
-                
-                # Small delay to respect rate limits
-                await asyncio.sleep(0.5)
+            
+                # Delay to prevent per-minute limit violations
+                await asyncio.sleep(8)  # ~1 request per 8 seconds per key
         
         self.is_initialized = True
         print("Historical data initialization complete")
