@@ -1,9 +1,9 @@
 """Candle fetching logic for TwelveData - fetches ONLY closed candles."""
 
 import httpx
-import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
+import asyncio
 
 try:
     from config import TWELVEDATA_BASE_URL, TIMEFRAMES, ROLLING_LIMITS
@@ -13,24 +13,10 @@ except ImportError as e:
 
 http_client = httpx.AsyncClient(timeout=30.0)
 
-# ----------------------------- PATCHED FETCH LOGIC -----------------------------
-async def _get_reserved_key_wait() -> str:
-    """
-    Attempt to reserve an API key for immediate use.
-    Wait until at least one key is available if all are maxed.
-    """
-    key = api_key_manager.reserve_key_for_request()
-    while not key:
-        print("No available API keys, waiting 10 seconds...")
-        await asyncio.sleep(10)
-        key = api_key_manager.reserve_key_for_request()
-    return key
-# ------------------------------------------------------------------------------
 
 def is_candle_closed(timeframe: str, dt: datetime) -> bool:
     minute = dt.minute
     hour = dt.hour
-
     if timeframe == "1min":
         return True
     elif timeframe == "5min":
@@ -43,14 +29,17 @@ def is_candle_closed(timeframe: str, dt: datetime) -> bool:
         return hour % 4 == 0 and minute == 0
     return False
 
+
 def get_timeframes_to_fetch(dt: datetime) -> List[str]:
     return [tf for tf in TIMEFRAMES if is_candle_closed(tf, dt)]
+
 
 def _parse_timestamp(ts: str) -> datetime:
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
 
 def _is_confirmed_closed(candle_ts: datetime, now: datetime, timeframe: str) -> bool:
     intervals = {"1min": 1, "5min": 5, "15min": 15, "1h": 60, "4h": 240}
@@ -59,32 +48,36 @@ def _is_confirmed_closed(candle_ts: datetime, now: datetime, timeframe: str) -> 
         return False
     return now >= candle_ts + timedelta(minutes=minutes)
 
+
 async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optional[List[Dict]]:
-    """Fetch ONLY confirmed closed candles from TwelveData (patched with key reservation)."""
-    api_key = await _get_reserved_key_wait()  # <-- patched line
+    """
+    Fetch ONLY confirmed closed candles from TwelveData.
+    Handles key reservation and adaptive waiting internally.
+    """
+    # Reserve a key and wait if all keys are maxed
+    key, wait_time = api_key_manager.reserve_key_for_request()
+    while not key:
+        await asyncio.sleep(wait_time)
+        key, wait_time = api_key_manager.reserve_key_for_request()
 
     symbol = "XAU/USD" if pair == "XAUUSD" else f"{pair[:3]}/{pair[3:]}"
     params = {
         "symbol": symbol,
         "interval": timeframe,
         "outputsize": outputsize + 1,
-        "apikey": api_key,
+        "apikey": key,
         "timezone": "UTC"
     }
 
     try:
         response = await http_client.get(TWELVEDATA_BASE_URL, params=params)
-
         if response.status_code != 200:
             print(f"TwelveData HTTP {response.status_code} for {pair}/{timeframe}")
-            api_key_manager.release_reserved_key(api_key)  # release on failure
             return None
 
         data = response.json()
-
         if "values" not in data:
             print(f"TwelveData error for {pair}/{timeframe}: {data.get('message')}")
-            api_key_manager.release_reserved_key(api_key)
             return None
 
         now = datetime.now(timezone.utc)
@@ -98,20 +91,21 @@ async def fetch_candles(pair: str, timeframe: str, outputsize: int = 1) -> Optio
         confirmed_candles = confirmed_candles[:outputsize]
 
         if confirmed_candles:
-            api_key_manager.record_usage(api_key)
+            # Record usage only after successful fetch
+            api_key_manager.record_usage(key)
             return confirmed_candles
 
-        api_key_manager.release_reserved_key(api_key)
         return None
 
     except Exception as e:
         print(f"Fetch error {pair}/{timeframe}: {e}")
-        api_key_manager.release_reserved_key(api_key)
         return None
+
 
 async def fetch_initial_history(pair: str, timeframe: str) -> Optional[List[Dict]]:
     outputsize = ROLLING_LIMITS.get(timeframe, 100)
     return await fetch_candles(pair, timeframe, outputsize)
+
 
 async def close_client():
     await http_client.aclose()
