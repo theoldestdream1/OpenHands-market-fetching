@@ -53,8 +53,6 @@ app.add_middleware(
 async def get_market_data(pair: str = Query(..., description="Currency pair (e.g., GBPJPY)")):
     """Get market data for a specific pair.
     
-    MODULE 9: External API endpoint for Lovable.
-    
     Response format:
     {
         "pair": "GBPJPY",
@@ -88,6 +86,18 @@ async def get_market_data(pair: str = Query(..., description="Currency pair (e.g
     }
 
 
+@app.get("/market-data/all")
+async def get_all_market_data():
+    """Return the latest candle data for all pairs at once."""
+    result = {}
+    for pair in PAIRS:
+        result[pair] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timeframes": data_storage.get_pair_data(pair)
+        }
+    return result
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -112,4 +122,4 @@ if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)
