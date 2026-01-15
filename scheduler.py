@@ -15,6 +15,7 @@ class CandleScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler(timezone="UTC")
         self.is_initialized = False
+        self.started = False
     
     async def initialize_data(self):
         """Fetch initial historical data for all pairs and timeframes."""
@@ -41,6 +42,8 @@ class CandleScheduler:
         print("Historical data initialization complete")
     
     async def fetch_closed_candles(self):
+        if not self.is_initialized:
+            return
         """Fetch newly closed candles for all pairs and applicable timeframes."""
         now = datetime.now(timezone.utc)
         timeframes_to_fetch = get_timeframes_to_fetch(now)
@@ -67,7 +70,11 @@ class CandleScheduler:
                 await asyncio.sleep(0.2)
     
     def start(self):
-        """Start the scheduler with cron jobs for each timeframe."""
+        if self.started:
+            print("Scheduler already started, skipping")
+            return
+
+        self.started = True
         # Run every minute to check for candle closures
         self.scheduler.add_job(
             self.fetch_closed_candles,
