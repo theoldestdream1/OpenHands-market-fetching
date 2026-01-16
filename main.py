@@ -16,17 +16,16 @@ from api_key_manager import api_key_manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: Initialize data and start scheduler
     print("Starting openhands-data-feeder service...")
-    
-    # Start scheduler first
+
+    # 🔒 BLOCKING historical initialization — MUST finish
+    await candle_scheduler.initialize_data()
+
+    # Start scheduler ONLY after full initialization
     candle_scheduler.start()
-    
-    # Initialize historical data in background
-    asyncio.create_task(candle_scheduler.initialize_data())
-    
+
     yield
-    
+
     # Shutdown
     print("Shutting down openhands-data-feeder service...")
     candle_scheduler.stop()
@@ -51,34 +50,16 @@ app.add_middleware(
 
 @app.get("/market-data")
 async def get_market_data(pair: str = Query(..., description="Currency pair (e.g., GBPJPY)")):
-    """Get market data for a specific pair.
-    
-    Response format:
-    {
-        "pair": "GBPJPY",
-        "timestamp": "ISO_UTC_TIME",
-        "timeframes": {
-            "1m": [],
-            "5m": [],
-            "15m": [],
-            "1h": [],
-            "4h": []
-        }
-    }
-    """
-    # Normalize pair to uppercase
     pair = pair.upper()
-    
-    # Validate pair
+
     if pair not in PAIRS:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid pair: {pair}. Valid pairs: {', '.join(PAIRS)}"
         )
-    
-    # Get data for the pair
+
     timeframes_data = data_storage.get_pair_data(pair)
-    
+
     return {
         "pair": pair,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -88,7 +69,6 @@ async def get_market_data(pair: str = Query(..., description="Currency pair (e.g
 
 @app.get("/market-data/all")
 async def get_all_market_data():
-    """Return the latest candle data for all pairs at once."""
     result = {}
     for pair in PAIRS:
         result[pair] = {
@@ -100,7 +80,6 @@ async def get_all_market_data():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -110,7 +89,6 @@ async def health_check():
 
 @app.get("/stats")
 async def get_stats():
-    """Get service statistics."""
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "api_keys": api_key_manager.get_stats(),
@@ -121,5 +99,6 @@ async def get_stats():
 if __name__ == "__main__":
     import os
     import uvicorn
+
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
