@@ -89,12 +89,22 @@ async def health_check():
 
 @app.get("/stats")
 async def get_stats():
+    """Get service statistics."""
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "api_keys": api_key_manager.get_stats(),
         "storage": data_storage.get_stats()
     }
 
+
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "service": "openhands-data-feeder",
+        "initialized": candle_scheduler.is_initialized
+    }
+    
 
 if __name__ == "__main__":
     import os
