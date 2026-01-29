@@ -66,7 +66,12 @@ async def root():
         "service": "openhands-data-feeder",
         "initialized": candle_scheduler.is_initialized
     }
+    
 
+@app.head("/")
+async def head_root():
+    return None
+    
 
 @app.get("/health")
 async def health_check():
